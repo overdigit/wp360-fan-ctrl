@@ -1,3 +1,9 @@
+wp360-fan-ctrl (1.1.0-1) trixie; urgency=low
+
+  * Update to libgpiod3
+
+ -- Overdigit <info@overdigit.com>  Fri, 17 Oct 2025 16:33:25 +0200
+
 wp360-fan-ctrl (1.0.0-1) bookworm; urgency=low
 
   * Initial release.
