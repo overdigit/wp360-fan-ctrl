@@ -6,6 +6,8 @@
 #include <gpiod.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
+#include <pthread.h>
+#include <sched.h>
 
 #ifndef	CONSUMER
 #define	CONSUMER "wp360-fan-governor"
@@ -18,6 +20,11 @@
 
 #define IOCTL_MBOX_PROPERTY _IOWR(100, 0, char *)
 
+float temp_deg;
+int duty_cycle = 300;
+pthread_mutex_t temp_mutex;
+pthread_mutex_t line_mutex;
+pthread_mutex_t duty_mutex;
 
 float vcgencmd_measure_temp(int *err)
 {
@@ -48,9 +55,50 @@ float vcgencmd_measure_temp(int *err)
     *err = 3;
     return 0;
   }
-  return temp;
+  temp_deg = temp;
 }
 
+struct pwm_thread_arg
+{
+  struct gpiod_line_request *line;
+};
+
+void *pwm_thread(void* args)
+{
+  struct sched_param param;
+  param.sched_priority = (sched_get_priority_min(SCHED_RR) * 9 + sched_get_priority_max(SCHED_RR)) / 10;
+  //param.sched_priority = sched_get_priority_max(SCHED_RR);
+  sched_setscheduler(0, SCHED_RR, &param);
+  struct pwm_thread_arg *arg = (struct pwm_thread_arg *) args;
+  struct gpiod_line_request *line = arg->line;
+  struct timespec sleep;
+  struct timespec time;
+  clock_gettime(CLOCK_REALTIME, &time);
+  sleep = time;
+  int us_on = 300;
+  while(1)
+  { 
+    gpiod_line_request_set_value(line, 6, GPIOD_LINE_VALUE_ACTIVE);
+    pthread_mutex_lock(&duty_mutex);
+    us_on = duty_cycle;
+    pthread_mutex_unlock(&duty_mutex);
+    //sleep = time;
+    sleep.tv_nsec += us_on * 1000;
+    if (sleep.tv_nsec > 999999999) {
+      sleep.tv_sec += 1;
+      sleep.tv_nsec -= 1000000000;
+    }
+    clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &sleep, NULL);
+    gpiod_line_request_set_value(line, 6, GPIOD_LINE_VALUE_INACTIVE);
+    //sleep = time;
+    sleep.tv_nsec += 1000000 - us_on * 1000;
+    if (sleep.tv_nsec > 999999999) {
+      sleep.tv_sec += 1;
+      sleep.tv_nsec -= 1000000000;
+    }
+    clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &sleep, NULL);
+  }
+}
 
 int main(void)
 {
@@ -60,14 +108,18 @@ int main(void)
   struct gpiod_line_config *config;
   struct gpiod_line_settings *settings;
   struct gpiod_request_config *req_cfg;
-  int pin_fan[2] = {26, 27};
+  int pin_fan[3] = {26, 27, 6};
   int ret;
   unsigned char return_code = 0;
   time_t unix_time = time(NULL);
   srand(unix_time);
   int fan_low, fan_high, fan_time = rand() % FAN_PERIOD;
   int vcgencmd_err = 0;
-  float temp_deg;
+  int pwm_duty_cycle = 300;
+  pthread_t pwm_thread_tid;
+  struct pwm_thread_arg pwm_args;
+  pthread_mutex_init(&line_mutex, NULL);
+  pthread_mutex_init(&temp_mutex, NULL);
 #if DEBUG
   char log_path[256];
   char date_fmt[256];
@@ -115,7 +167,7 @@ int main(void)
     goto release_settings;
   }
   if (
-    gpiod_line_config_add_line_settings(config, pin_fan, 2, settings)
+    gpiod_line_config_add_line_settings(config, pin_fan, 3, settings)
   )
   {
     perror("Could not set line configuration\n");
@@ -139,10 +191,11 @@ int main(void)
     return_code = 248;
     goto release_req_cfg;
   }
-
+  pwm_args.line = line;
+  pthread_create(&pwm_thread_tid, NULL, pwm_thread, (void*) &pwm_args);
   while (true)
   {
-    temp_deg = vcgencmd_measure_temp(&vcgencmd_err);
+    vcgencmd_measure_temp(&vcgencmd_err);
     if (vcgencmd_err)
     {
       return_code = vcgencmd_err;
@@ -152,7 +205,35 @@ int main(void)
     fan_low  = temp_deg > 65.0 || (fan_low  && temp_deg > 60.0);
     fan_high = temp_deg > 87.0 || (fan_high && temp_deg > 83.0);
 
-    if (gpiod_line_request_set_value(line, pin_fan[fan_time <= FAN_PERIOD/2], fan_low ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE))
+    if (!fan_low)
+    {
+      pwm_duty_cycle = 300; //per-thousand
+    } else {
+      if (temp_deg > 75.0)
+      {
+        pwm_duty_cycle += 50;
+        if (pwm_duty_cycle > 900)
+        {
+          pwm_duty_cycle = 900;
+        }
+      }
+      else if (temp_deg < 70.0)
+      {
+        pwm_duty_cycle -= 50;
+        if (pwm_duty_cycle < 300)
+        {
+          pwm_duty_cycle = 300;
+        }
+      }
+    }
+    pthread_mutex_lock(&duty_mutex);
+    duty_cycle = pwm_duty_cycle;
+    pthread_mutex_unlock(&duty_mutex);
+
+    pthread_mutex_lock(&line_mutex);
+    ret = gpiod_line_request_set_value(line, pin_fan[fan_time <= FAN_PERIOD/2], fan_low ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE);
+    pthread_mutex_unlock(&line_mutex);
+    if (ret)
     {
       perror("Could not set line value\n");
       return_code = 247;
@@ -166,7 +247,10 @@ int main(void)
     fflush(log);
 #endif
     sleep(1);
-    if (gpiod_line_request_set_value(line, pin_fan[fan_time > FAN_PERIOD/2], fan_high ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE))
+    pthread_mutex_lock(&line_mutex);
+    ret = gpiod_line_request_set_value(line, pin_fan[fan_time > FAN_PERIOD/2], fan_high ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE);
+    pthread_mutex_unlock(&line_mutex);
+    if (ret)
     {
       perror("Could not set line value\n");
       return_code = 247;

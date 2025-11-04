@@ -3,10 +3,10 @@ prefix = /usr
 all: wp360-fan-ctrl wp360-fan-ctrl-debug
 
 wp360-fan-ctrl: main.c
-	$(CC) main.c -l gpiod -o wp360-fan-ctrl
+	$(CC) main.c -l gpiod -l pthread -l rt -o wp360-fan-ctrl
 
 wp360-fan-ctrl-debug: main.c
-	$(CC) -DDEBUG main.c -l gpiod -o wp360-fan-ctrl-debug
+	$(CC) -DDEBUG main.c -l gpiod -l pthread -l rt -o wp360-fan-ctrl-debug
 
 install: all
 	install -d $(DESTDIR)$(prefix)/bin
