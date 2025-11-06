@@ -18,10 +18,26 @@
 #define FAN_PERIOD  60
 #endif
 
+#define PIN_FAN0  26
+#define PIN_FAN1  27
+#define PIN_PWM   6
+
+#define FAN_LOW_TEMP_ENGAGE       55.0
+#define FAN_LOW_TEMP_DISENGAGE    50.0
+#define FAN_HIGH_TEMP_ENGAGE      999.0 // Absurdly high to disable
+#define FAN_HIGH_TEMP_DISENGAGE   999.0 // Absurdly high to disable
+#define FAN_HIGH_PWM_ENGAGE       550
+#define FAN_HIGH_PWM_DISENGAGE    375
+#define PWM_MIN_DUTY              200
+#define PWM_MAX_DUTY              900
+#define PWM_STEP                  25
+#define PWM_RAMP_TEMP             60.0
+#define PWM_SLOW_TEMP             55.0
+
 #define IOCTL_MBOX_PROPERTY _IOWR(100, 0, char *)
 
 float temp_deg;
-int duty_cycle = 300;
+int duty_cycle = PWM_MIN_DUTY;
 pthread_mutex_t temp_mutex;
 pthread_mutex_t line_mutex;
 pthread_mutex_t duty_mutex;
@@ -67,36 +83,32 @@ void *pwm_thread(void* args)
 {
   struct sched_param param;
   param.sched_priority = (sched_get_priority_min(SCHED_RR) * 9 + sched_get_priority_max(SCHED_RR)) / 10;
-  //param.sched_priority = sched_get_priority_max(SCHED_RR);
   sched_setscheduler(0, SCHED_RR, &param);
+
   struct pwm_thread_arg *arg = (struct pwm_thread_arg *) args;
   struct gpiod_line_request *line = arg->line;
-  struct timespec sleep;
   struct timespec time;
   clock_gettime(CLOCK_REALTIME, &time);
-  sleep = time;
   int us_on = 300;
   while(1)
   { 
-    gpiod_line_request_set_value(line, 6, GPIOD_LINE_VALUE_ACTIVE);
+    gpiod_line_request_set_value(line, PIN_PWM, GPIOD_LINE_VALUE_ACTIVE);
     pthread_mutex_lock(&duty_mutex);
     us_on = duty_cycle;
     pthread_mutex_unlock(&duty_mutex);
-    //sleep = time;
-    sleep.tv_nsec += us_on * 1000;
-    if (sleep.tv_nsec > 999999999) {
-      sleep.tv_sec += 1;
-      sleep.tv_nsec -= 1000000000;
+    time.tv_nsec += us_on * 1000;
+    if (time.tv_nsec > 999999999) {
+      time.tv_sec += 1;
+      time.tv_nsec -= 1000000000;
     }
-    clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &sleep, NULL);
-    gpiod_line_request_set_value(line, 6, GPIOD_LINE_VALUE_INACTIVE);
-    //sleep = time;
-    sleep.tv_nsec += 1000000 - us_on * 1000;
-    if (sleep.tv_nsec > 999999999) {
-      sleep.tv_sec += 1;
-      sleep.tv_nsec -= 1000000000;
+    clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &time, NULL);
+    gpiod_line_request_set_value(line, PIN_PWM, GPIOD_LINE_VALUE_INACTIVE);
+    time.tv_nsec += 1000000 - us_on * 1000;
+    if (time.tv_nsec > 999999999) {
+      time.tv_sec += 1;
+      time.tv_nsec -= 1000000000;
     }
-    clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &sleep, NULL);
+    clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &time, NULL);
   }
 }
 
@@ -108,14 +120,14 @@ int main(void)
   struct gpiod_line_config *config;
   struct gpiod_line_settings *settings;
   struct gpiod_request_config *req_cfg;
-  int pin_fan[3] = {26, 27, 6};
+  int pin_fan[3] = {PIN_FAN0, PIN_FAN1, PIN_PWM};
   int ret;
   unsigned char return_code = 0;
   time_t unix_time = time(NULL);
   srand(unix_time);
   int fan_low, fan_high, fan_time = rand() % FAN_PERIOD;
   int vcgencmd_err = 0;
-  int pwm_duty_cycle = 300;
+  int pwm_duty_cycle = PWM_MIN_DUTY;
   pthread_t pwm_thread_tid;
   struct pwm_thread_arg pwm_args;
   pthread_mutex_init(&line_mutex, NULL);
@@ -123,13 +135,14 @@ int main(void)
 #if DEBUG
   char log_path[256];
   char date_fmt[256];
-  strftime(log_path, 256, "/var/log/wp360-fan-control/%Y%m%d-%H%M%S.log", gmtime(&unix_time));
+  enum gpiod_line_value states[3];
+  strftime(log_path, 256, "/var/log/wp360-fan-ctrl/%Y%m%d-%H%M%S.log", gmtime(&unix_time));
   FILE *log = fopen(log_path,"w");
   if (!log)
   {
     return 252;
   }
-  fprintf(log,"Time,Temperature,fan_low,fan_high,fan0,fan1\n");
+  fprintf(log,"Time,Temperature,fan_low,fan_high,fan0,fan1,duty_cycle\n");
 #endif
 
   chip = gpiod_chip_open(chipname);
@@ -202,27 +215,28 @@ int main(void)
       break;
     }
 
-    fan_low  = temp_deg > 65.0 || (fan_low  && temp_deg > 60.0);
-    fan_high = temp_deg > 87.0 || (fan_high && temp_deg > 83.0);
+    fan_low  = temp_deg > FAN_LOW_TEMP_ENGAGE || (fan_low  && temp_deg > FAN_LOW_TEMP_DISENGAGE);
+    fan_high = temp_deg > FAN_HIGH_TEMP_ENGAGE || (fan_high && temp_deg > FAN_HIGH_TEMP_DISENGAGE) ||
+               pwm_duty_cycle > FAN_HIGH_PWM_ENGAGE || (fan_high && pwm_duty_cycle > FAN_HIGH_PWM_DISENGAGE);
 
     if (!fan_low)
     {
-      pwm_duty_cycle = 300; //per-thousand
+      pwm_duty_cycle = PWM_MIN_DUTY;
     } else {
-      if (temp_deg > 75.0)
+      if (temp_deg > PWM_RAMP_TEMP)
       {
-        pwm_duty_cycle += 50;
-        if (pwm_duty_cycle > 900)
+        pwm_duty_cycle += PWM_STEP;
+        if (pwm_duty_cycle > PWM_MAX_DUTY)
         {
-          pwm_duty_cycle = 900;
+          pwm_duty_cycle = PWM_MAX_DUTY;
         }
       }
-      else if (temp_deg < 70.0)
+      else if (temp_deg < PWM_SLOW_TEMP)
       {
-        pwm_duty_cycle -= 50;
-        if (pwm_duty_cycle < 300)
+        pwm_duty_cycle -= PWM_STEP;
+        if (pwm_duty_cycle < PWM_MIN_DUTY)
         {
-          pwm_duty_cycle = 300;
+          pwm_duty_cycle = PWM_MIN_DUTY;
         }
       }
     }
@@ -239,11 +253,22 @@ int main(void)
       return_code = 247;
       goto release_line;
     }
-#if DEBUGTODOFIXTHISPART
+#if DEBUG
     unix_time = time(NULL);
     strftime(date_fmt, 256, "%Y-%m-%d %H:%M:%S", gmtime(&unix_time));
-    fprintf(stderr, "%s, Temp: %3.1f, fan_low: %d, fan_high: %d, fan0: %d, fan1: %d\n", date_fmt, temp_deg, fan_low, fan_high, gpiod_line_get_value(line[0]), gpiod_line_get_value(line[1]));
-    fprintf(log, "%s,%3.1f,%d,%d,%d,%d\n", date_fmt, temp_deg, fan_low, fan_high, gpiod_line_get_value(line[0]), gpiod_line_get_value(line[1]));
+    pthread_mutex_lock(&line_mutex);
+    gpiod_line_request_get_values(line, states);
+    pthread_mutex_unlock(&line_mutex);
+    fprintf(stderr, "%s, Temp: %3.1f, fan_low: %d, fan_high: %d, fan0: %d, fan1: %d, duty cycle: %d%%\n", 
+        date_fmt,
+        temp_deg,
+        fan_low,
+        fan_high,
+        states[0] == GPIOD_LINE_VALUE_ACTIVE,
+        states[1] == GPIOD_LINE_VALUE_ACTIVE,
+        pwm_duty_cycle / 10
+    );
+    fprintf(log, "%s,%3.1f,%d,%d,%d,%d,%d\n", date_fmt, temp_deg, fan_low, fan_high, states[0] == GPIOD_LINE_VALUE_ACTIVE, states[1] == GPIOD_LINE_VALUE_ACTIVE, pwm_duty_cycle / 10);
     fflush(log);
 #endif
     sleep(1);
