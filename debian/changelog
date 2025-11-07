@@ -1,3 +1,9 @@
+wp360-fan-ctrl (1.2.2-1) trixie; urgency=low
+
+  * Added log directory creation.
+
+ -- Overdigit <info@overdigit.com>  Fri, 07 Nov 2025 19:04:31 +0100
+
 wp360-fan-ctrl (1.2.1-1) trixie; urgency=low
 
   * Run secondary fan based on fan speed instead of cpu temperature.
