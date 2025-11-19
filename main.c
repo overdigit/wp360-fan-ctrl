@@ -92,7 +92,9 @@ void *pwm_thread(void* args)
   int us_on = 300;
   while(1)
   { 
+    pthread_mutex_lock(&line_mutex);
     gpiod_line_request_set_value(line, PIN_PWM, GPIOD_LINE_VALUE_ACTIVE);
+    pthread_mutex_unlock(&line_mutex);
     pthread_mutex_lock(&duty_mutex);
     us_on = duty_cycle;
     pthread_mutex_unlock(&duty_mutex);
@@ -102,7 +104,9 @@ void *pwm_thread(void* args)
       time.tv_nsec -= 1000000000;
     }
     clock_nanosleep(CLOCK_REALTIME, TIMER_ABSTIME, &time, NULL);
+    pthread_mutex_lock(&line_mutex);
     gpiod_line_request_set_value(line, PIN_PWM, GPIOD_LINE_VALUE_INACTIVE);
+    pthread_mutex_unlock(&line_mutex);
     time.tv_nsec += 1000000 - us_on * 1000;
     if (time.tv_nsec > 999999999) {
       time.tv_sec += 1;
