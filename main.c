@@ -34,6 +34,13 @@
 #define PWM_RAMP_TEMP             60.0
 #define PWM_SLOW_TEMP             55.0
 
+#define FIRMWARE_PWM_Y            26
+#define FIRMWARE_PWM_M            05
+#define FIRMWARE_PWM_D            07
+
+#define PWM_OFFLOAD(x)    { if (pwm_offload != 0) { x } }
+#define NO_PWM_OFFLOAD(x) { if (pwm_offload != 1) { x } }
+
 #define IOCTL_MBOX_PROPERTY _IOWR(100, 0, char *)
 
 float temp_deg;
@@ -41,6 +48,59 @@ int duty_cycle = PWM_MIN_DUTY;
 pthread_mutex_t temp_mutex;
 pthread_mutex_t line_mutex;
 pthread_mutex_t duty_mutex;
+
+int check_firmware_date(int y, int m, int d)
+{
+  if (y < FIRMWARE_PWM_Y)
+  {
+    return 0;
+  }
+  else if (y > FIRMWARE_PWM_Y)
+  {
+    return 1;
+  }
+  if (m < FIRMWARE_PWM_M)
+  {
+    return 0;
+  }
+  else if (m > FIRMWARE_PWM_M)
+  {
+    return 1;
+  }
+  if (d < FIRMWARE_PWM_D)
+  {
+    return 0;
+  }
+  return 1;
+}
+
+int check_pwm_offload(void)
+{
+  int y, m, d, n;
+  char firmware_release_str[10];
+  FILE *firmware_release_f = fopen("/sys/kernel/wp360-pmuc/firmware_release", "r");
+
+  if (firmware_release_f == NULL)
+  {
+    return -1;
+  }
+
+  if (fgets(firmware_release_str, 10, firmware_release_f) == NULL)
+  {
+    fclose(firmware_release_f);
+    return -1;
+  }
+
+  if (sscanf(firmware_release_str, "%d-%d-%d", &y, &m, &d) != 3)
+  {
+    fclose(firmware_release_f);
+    return -1;
+  }
+
+  n = check_firmware_date(y, m, d);
+  fclose(firmware_release_f);
+  return n;
+}
 
 float vcgencmd_measure_temp(int *err)
 {
@@ -134,8 +194,10 @@ int main(void)
   int pwm_duty_cycle = PWM_MIN_DUTY;
   pthread_t pwm_thread_tid;
   struct pwm_thread_arg pwm_args;
-  pthread_mutex_init(&line_mutex, NULL);
-  pthread_mutex_init(&temp_mutex, NULL);
+  int pwm_offload = check_pwm_offload();
+  FILE *pwm_offload_f;
+  NO_PWM_OFFLOAD(pthread_mutex_init(&line_mutex, NULL););
+  NO_PWM_OFFLOAD(pthread_mutex_init(&temp_mutex, NULL););
 #if DEBUG
   char log_path[256];
   char date_fmt[256];
@@ -184,7 +246,7 @@ int main(void)
     goto release_settings;
   }
   if (
-    gpiod_line_config_add_line_settings(config, pin_fan, 3, settings)
+    gpiod_line_config_add_line_settings(config, pin_fan, (pwm_offload == 1) ? 2 : 3, settings)
   )
   {
     perror("Could not set line configuration\n");
@@ -209,7 +271,8 @@ int main(void)
     goto release_req_cfg;
   }
   pwm_args.line = line;
-  pthread_create(&pwm_thread_tid, NULL, pwm_thread, (void*) &pwm_args);
+  NO_PWM_OFFLOAD(pthread_create(&pwm_thread_tid, NULL, pwm_thread, (void*) &pwm_args););
+  PWM_OFFLOAD(pwm_offload_f = fopen("/sys/kernel/wp360-pmuc/fan_voltage", "w"); if (pwm_offload_f == NULL) { perror("Could not open fan driver file"); return_code = 246; goto release_line; });
   while (true)
   {
     vcgencmd_measure_temp(&vcgencmd_err);
@@ -244,13 +307,14 @@ int main(void)
         }
       }
     }
-    pthread_mutex_lock(&duty_mutex);
+    NO_PWM_OFFLOAD(pthread_mutex_lock(&duty_mutex););
     duty_cycle = pwm_duty_cycle;
-    pthread_mutex_unlock(&duty_mutex);
+    PWM_OFFLOAD(fprintf(pwm_offload_f, "%d", duty_cycle / 10); fflush(pwm_offload_f););
+    NO_PWM_OFFLOAD(pthread_mutex_unlock(&duty_mutex););
 
-    pthread_mutex_lock(&line_mutex);
+    NO_PWM_OFFLOAD(pthread_mutex_lock(&line_mutex););
     ret = gpiod_line_request_set_value(line, pin_fan[fan_time <= FAN_PERIOD/2], fan_low ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE);
-    pthread_mutex_unlock(&line_mutex);
+    NO_PWM_OFFLOAD(pthread_mutex_unlock(&line_mutex););
     if (ret)
     {
       perror("Could not set line value\n");
@@ -260,9 +324,9 @@ int main(void)
 #if DEBUG
     unix_time = time(NULL);
     strftime(date_fmt, 256, "%Y-%m-%d %H:%M:%S", gmtime(&unix_time));
-    pthread_mutex_lock(&line_mutex);
+    NO_PWM_OFFLOAD(pthread_mutex_lock(&line_mutex););
     gpiod_line_request_get_values(line, states);
-    pthread_mutex_unlock(&line_mutex);
+    NO_PWM_OFFLOAD(pthread_mutex_unlock(&line_mutex););
     fprintf(stderr, "%s, Temp: %3.1f, fan_low: %d, fan_high: %d, fan0: %d, fan1: %d, duty cycle: %d%%\n", 
         date_fmt,
         temp_deg,
@@ -276,9 +340,9 @@ int main(void)
     fflush(log);
 #endif
     sleep(1);
-    pthread_mutex_lock(&line_mutex);
+    NO_PWM_OFFLOAD(pthread_mutex_lock(&line_mutex););
     ret = gpiod_line_request_set_value(line, pin_fan[fan_time > FAN_PERIOD/2], fan_high ? GPIOD_LINE_VALUE_ACTIVE : GPIOD_LINE_VALUE_INACTIVE);
-    pthread_mutex_unlock(&line_mutex);
+    NO_PWM_OFFLOAD(pthread_mutex_unlock(&line_mutex););
     if (ret)
     {
       perror("Could not set line value\n");
