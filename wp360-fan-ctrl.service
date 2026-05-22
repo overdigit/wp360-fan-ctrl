@@ -3,7 +3,7 @@ Description=Control WP360 fans
 After=multi-user.target
 
 [Service]
-ExecStart=/usr/bin/wp360-fan-ctrl
+ExecStart=/usr/libexec/wp360-fan-ctrl/wp360-fan-ctrl
 
 [Install]
 WantedBy=multi-user.target
