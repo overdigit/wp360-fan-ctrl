@@ -1,6 +1,0 @@
-#!/bin/bash
-
-if [[ "$1" = "configure" ]]
-then
-  systemctl disable --now wp360-fan-ctrl
-fi

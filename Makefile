@@ -9,12 +9,12 @@ wp360-fan-ctrl-debug: main.c
 	$(CC) -DDEBUG main.c -l gpiod -l pthread -l rt -o wp360-fan-ctrl-debug
 
 install: all
-	install -d $(DESTDIR)$(prefix)/lib/systemd/system
+#	install -d $(DESTDIR)$(prefix)/lib/systemd/system
 	install -d $(DESTDIR)$(prefix)/libexec/wp360-fan-ctrl/
 	install -d $(DESTDIR)/var/log/wp360-fan-ctrl
 	install wp360-fan-ctrl $(DESTDIR)$(prefix)/libexec/wp360-fan-ctrl
 	install wp360-fan-ctrl-debug $(DESTDIR)$(prefix)/libexec/wp360-fan-ctrl
-	install wp360-fan-ctrl.service $(DESTDIR)$(prefix)/lib/systemd/system
+#	install wp360-fan-ctrl.service $(DESTDIR)$(prefix)/lib/systemd/system
 
 clean:
 	-rm wp360-fan-ctrl wp360-fan-ctrl-debug
