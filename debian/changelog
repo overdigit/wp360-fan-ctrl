@@ -1,3 +1,9 @@
+wp360-fan-ctrl (1.3.2-1) trixie; urgency=low
+
+  * Reduce unnecessary pmuc updates.
+
+ -- Overdigit <info@overdigit.com>  Tue, 08 Sep 2026 16:21:39 +0200
+
 wp360-fan-ctrl (1.3.1-1) trixie; urgency=low
 
   * Better service packaging.
