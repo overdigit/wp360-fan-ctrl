@@ -275,6 +275,7 @@ int main(void)
   PWM_OFFLOAD(pwm_offload_f = fopen("/sys/kernel/wp360-pmuc/fan_voltage", "w"); if (pwm_offload_f == NULL) { perror("Could not open fan driver file"); return_code = 246; goto release_line; });
   while (true)
   {
+    int pwm_duty_cycle_old = pwm_duty_cycle;
     vcgencmd_measure_temp(&vcgencmd_err);
     if (vcgencmd_err)
     {
@@ -309,7 +310,7 @@ int main(void)
     }
     NO_PWM_OFFLOAD(pthread_mutex_lock(&duty_mutex););
     duty_cycle = pwm_duty_cycle;
-    PWM_OFFLOAD(fprintf(pwm_offload_f, "%d", duty_cycle / 10); fflush(pwm_offload_f););
+    PWM_OFFLOAD(if (pwm_duty_cycle != pwm_duty_cycle_old) { fprintf(pwm_offload_f, "%d", duty_cycle / 10); fflush(pwm_offload_f); });
     NO_PWM_OFFLOAD(pthread_mutex_unlock(&duty_mutex););
 
     NO_PWM_OFFLOAD(pthread_mutex_lock(&line_mutex););
